@@ -31,7 +31,7 @@ export type Line = {
 
 export enum BuilderError {
   ShouldntHappen = 'Shouldnt happen',
-  KeyAlreadyDefined = 'Key already defined',
+  FenAlreadyDefined = 'Fen already defined',
   PlyAlreadyDefined = 'Ply already defined',
   CantReadFen = 'Cant read fen',
   KeyHasNoFen = 'Key has no fen',
@@ -45,7 +45,7 @@ export type KeyPly = {
   ply: Ply
 }
 
-export class LineBuilder {
+export class Builder {
   fens: Map<Key, Fen>
   lines: Map<KeyPly, Line>
   fenErrors: MapOfArray<Key, BuilderError>
@@ -55,9 +55,13 @@ export class LineBuilder {
   zeroSituations: Map<Key, SituationView>
   plyMoves: Map<KeyPly, MoveView>
 
+  parents: Map<Key, Key>
+
   constructor() {
     this.kp = new bd.DB2<Key, Ply, KeyPly>((key, ply) => ({key, ply}),
                                               [], []);
+
+    this.parents = new Map<Key, Key>();
 
     this.fens = new Map<Key, Fen>();
     this.lines = new Map<KeyPly, Line>();
@@ -67,6 +71,31 @@ export class LineBuilder {
 
     this.zeroSituations = new Map();
     this.plyMoves = new Map<KeyPly, MoveView>();
+  }
+
+  zeroPly(key: Key) {
+    return this.fens.get(key);
+  }
+
+  zeroError(key: Key) {
+    return this.fenErrors.get(key);
+  }
+
+  plyMove(key: Key, ply: Ply): MoveView | undefined {
+    let res = this.plyMoves.get(this.kp.get(key, ply));
+
+    if (!res) {
+      let pkey = this.parents.get(key);
+
+      if (pkey) {
+        return this.plyMove(pkey, ply);
+      }
+    }
+    return res;
+  }
+
+  plyErr(key: Key, ply: Ply) {
+    return this.plyErrors.get(this.kp.get(key, ply));
   }
 
   fenError(key: Key, error: BuilderError) {
@@ -79,7 +108,7 @@ export class LineBuilder {
 
   fen(key: Key, fen: string) {
     if (this.fens.has(key)) {
-      this.fenError(key, BuilderError.KeyAlreadyDefined);
+      this.fenError(key, BuilderError.FenAlreadyDefined);
     } else {
       this.fens.set(key, {
         key,
@@ -101,6 +130,10 @@ export class LineBuilder {
         ply,
         move
       });
+
+      if (parent) {
+        this.parents.set(key, parent);
+      }
     }
   }
 
@@ -125,12 +158,25 @@ export class LineBuilder {
   }
 
   buildMove(kp: KeyPly): MoveView | undefined {
+    let mv = this.plyMoves.get(kp);
+
+    if (mv) {
+      return mv;
+    }
+
+    let err = this.plyErrors.get(kp);
+
+    if (err.length > 0) {
+      return undefined;
+    }
+
+
     let line = this.lines.get(kp);
 
     if (!line) {
       this.plyError(kp, BuilderError.ShouldntHappen);
     } else if (line.ply === 1) {
-      let before = this.zeroSituations.get(line.key);
+      let before = this.zeroSituations.get(line.parent || line.key);
 
       if (!before) {
         this.plyError(kp, BuilderError.KeyHasNoFen);
@@ -170,12 +216,16 @@ export class LineBuilder {
           situation: situationAfter,
           fen: fenAfter
         }
-        return {
+
+        let mv = {
           move,
           after,
           uci: m.uci(move),
           san: m.san(move)
-        }        
+        }
+
+        this.plyMoves.set(kp, mv);
+        return mv;
       }
     }
   }
